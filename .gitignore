@@ -1,0 +1,10 @@
+node_modules/
+dist/
+.env
+*.secret.yaml
+values/values-prod.yaml
+.npm-cache/
+.claude/
+.DS_Store
+*.DS_Store
+

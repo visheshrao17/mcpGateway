@@ -1,0 +1,16 @@
+{
+  "name": "urumi-mcp-gateway",
+  "private": true,
+  "type": "module",
+  "workspaces": ["packages/*", "apps/*"],
+  "engines": { "node": ">=22.18" },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "node --test 'apps/*/test/*.test.ts' 'packages/*/test/*.test.ts'",
+    "dod": "node scripts/dod-test.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^6.0.0"
+  }
+}
