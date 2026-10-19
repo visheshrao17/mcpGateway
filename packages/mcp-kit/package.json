@@ -1,0 +1,10 @@
+{
+  "name": "@urumi/mcp-kit",
+  "private": true,
+  "type": "module",
+  "exports": { ".": "./src/index.ts" },
+  "dependencies": {
+    "@modelcontextprotocol/node": "^2.1.1",
+    "@modelcontextprotocol/server": "^2.3.1"
+  }
+}
