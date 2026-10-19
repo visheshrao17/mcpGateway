@@ -1,0 +1,17 @@
+# Local k3d cluster. *.localtest.me resolves to 127.0.0.1, and k3d maps host ports 80/443
+# to the bundled Traefik, so http://store.localtest.me and http://app.localtest.me work
+# with no /etc/hosts edits.
+domain: localtest.me
+tls:
+  enabled: false
+ingress:
+  className: traefik
+storageClass: local-path
+image:
+  repository: urumi/app
+  tag: dev
+  pullPolicy: IfNotPresent
+gateway:
+  replicas: 1
+llm:
+  model: nvidia/nemotron-3-super-120b-a12b:free

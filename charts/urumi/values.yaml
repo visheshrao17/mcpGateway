@@ -1,0 +1,76 @@
+domain: localtest.me
+hosts:
+  store: store
+  app: app
+tls:
+  enabled: false
+  clusterIssuer: ""
+
+ingress:
+  className: traefik
+
+storageClass: ""
+
+namespaces:
+  store: urumi-store
+  mcp: urumi-mcp
+
+image:
+  repository: urumi/app
+  tag: dev
+  pullPolicy: IfNotPresent
+
+store:
+  timezone: Asia/Kolkata
+  currency: INR
+  country: "IN:KA"
+  title: Urumi Demo Store
+  adminEmail: admin@example.com
+  woocommerceVersion: ""
+  wordpressImage: wordpress:7.0-php8.4-apache
+  cliImage: wordpress:cli-php8.4
+  storage: 2Gi
+  resources:
+    requests: { cpu: 100m, memory: 256Mi }
+    limits: { cpu: "1", memory: 768Mi }
+
+mariadb:
+  image: mariadb:11.8
+  storage: 2Gi
+  resources:
+    requests: { cpu: 100m, memory: 256Mi }
+    limits: { cpu: "1", memory: 1Gi }
+
+postgres:
+  image: postgres:17-alpine
+  storage: 1Gi
+  resources:
+    requests: { cpu: 50m, memory: 128Mi }
+    limits: { cpu: 500m, memory: 512Mi }
+
+mcp:
+  resources:
+    requests: { cpu: 20m, memory: 64Mi }
+    limits: { cpu: 300m, memory: 256Mi }
+  notesStorage: 256Mi
+  fxApiUrl: https://api.frankfurter.dev/v1
+
+gateway:
+  replicas: 1
+  adminEmail: admin@urumi.local
+  adminOnlyTools: woo__create_product,woo__update_order_status
+  listTimeoutMs: 3000
+  callTimeoutMs: 20000
+  refreshIntervalMs: 15000
+  resources:
+    requests: { cpu: 50m, memory: 128Mi }
+    limits: { cpu: "1", memory: 512Mi }
+
+llm:
+  baseUrl: https://openrouter.ai/api/v1
+  model: ""
+  existingSecret: llm-credentials
+
+networkPolicies:
+  enabled: true
+  ingressControllerNamespace: kube-system

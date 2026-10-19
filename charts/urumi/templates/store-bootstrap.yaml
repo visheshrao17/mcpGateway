@@ -1,0 +1,82 @@
+{{- $ns := .Values.namespaces.store }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: store-bootstrap
+  namespace: {{ $ns }}
+  labels: {{- include "urumi.labels" . | nindent 4 }}
+data:
+  bootstrap.sh: |
+    {{- .Files.Get "files/store-bootstrap.sh" | nindent 4 }}
+  {{- range $path, $_ := .Files.Glob "files/store/*" }}
+  {{- if not (hasSuffix ".png" $path) }}
+  {{ base $path }}: |
+    {{- $.Files.Get $path | nindent 4 }}
+  {{- end }}
+  {{- end }}
+binaryData:
+  {{- range $path, $_ := .Files.Glob "files/store/*.png" }}
+  {{ base $path }}: {{ $.Files.Get $path | b64enc | quote }}
+  {{- end }}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: store-bootstrap-{{ .Release.Revision }}
+  namespace: {{ $ns }}
+  labels: {{- include "urumi.labels" . | nindent 4 }}
+spec:
+  backoffLimit: 6
+  activeDeadlineSeconds: 1200
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels: { app: store-bootstrap }
+    spec:
+      restartPolicy: OnFailure
+      securityContext: {{- include "urumi.podSecurity" 33 | nindent 8 }}
+      affinity:
+        podAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector: { matchLabels: { app: wordpress } }
+              topologyKey: kubernetes.io/hostname
+      containers:
+        - name: wp-cli
+          image: {{ .Values.store.cliImage }}
+          command: [sh, /scripts/bootstrap.sh]
+          env:
+            - { name: STORE_URL, value: '{{ include "urumi.scheme" . }}://{{ include "urumi.storeHost" . }}' }
+            - { name: STORE_TITLE, value: {{ .Values.store.title | quote }} }
+            - { name: STORE_ADMIN_EMAIL, value: {{ .Values.store.adminEmail | quote }} }
+            - { name: STORE_TIMEZONE, value: {{ .Values.store.timezone | quote }} }
+            - { name: STORE_CURRENCY, value: {{ .Values.store.currency | quote }} }
+            - { name: STORE_COUNTRY, value: {{ .Values.store.country | quote }} }
+            - { name: WOOCOMMERCE_VERSION, value: {{ .Values.store.woocommerceVersion | quote }} }
+            - { name: HOME, value: /tmp }
+            - { name: WORDPRESS_DB_HOST, value: mariadb }
+            - { name: WORDPRESS_DB_NAME, value: wordpress }
+            - { name: WORDPRESS_DB_USER, value: wordpress }
+            - name: WORDPRESS_DB_PASSWORD
+              valueFrom: { secretKeyRef: { name: store-credentials, key: mariadb-password } }
+            - name: WP_ADMIN_PASSWORD
+              valueFrom: { secretKeyRef: { name: store-credentials, key: wp-admin-password } }
+            - name: WOO_CONSUMER_KEY
+              valueFrom: { secretKeyRef: { name: store-credentials, key: woo-consumer-key } }
+            - name: WOO_CONSUMER_SECRET
+              valueFrom: { secretKeyRef: { name: store-credentials, key: woo-consumer-secret } }
+          securityContext: {{- include "urumi.restricted" . | nindent 12 }}
+          resources:
+            requests: { cpu: 50m, memory: 128Mi }
+            limits: { cpu: "1", memory: 512Mi }
+          volumeMounts:
+            - { name: html, mountPath: /var/www/html }
+            - { name: scripts, mountPath: /scripts }
+            - { name: assets, mountPath: /scripts/store, readOnly: true }
+      volumes:
+        - name: html
+          persistentVolumeClaim: { claimName: wordpress }
+        - name: scripts
+          configMap: { name: store-bootstrap }
+
+        - name: assets
+          configMap: { name: store-bootstrap }

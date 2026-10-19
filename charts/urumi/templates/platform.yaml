@@ -1,0 +1,169 @@
+{{- $ns := .Release.Namespace }}
+{{- $mcp := .Values.namespaces.mcp }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: {{ $ns }}
+  labels: {{- include "urumi.labels" . | nindent 4 }}
+spec:
+  selector: { app: postgres }
+  ports: [{ name: postgres, port: 5432, targetPort: 5432 }]
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres
+  namespace: {{ $ns }}
+  labels: {{- include "urumi.labels" . | nindent 4 }}
+spec:
+  serviceName: postgres
+  replicas: 1
+  selector:
+    matchLabels: { app: postgres }
+  template:
+    metadata:
+      labels: { app: postgres }
+    spec:
+      securityContext: {{- include "urumi.podSecurity" 70 | nindent 8 }}
+      automountServiceAccountToken: false
+      containers:
+        - name: postgres
+          image: {{ .Values.postgres.image }}
+          ports: [{ containerPort: 5432 }]
+          env:
+            - { name: POSTGRES_USER, value: gateway }
+            - { name: POSTGRES_DB, value: gateway }
+            - { name: PGDATA, value: /var/lib/postgresql/data/pgdata }
+            - name: POSTGRES_PASSWORD
+              valueFrom: { secretKeyRef: { name: gateway-credentials, key: postgres-password } }
+          securityContext: {{- include "urumi.restricted" . | nindent 12 }}
+          readinessProbe:
+            exec: { command: [pg_isready, -U, gateway, -d, gateway] }
+            periodSeconds: 5
+          livenessProbe:
+            exec: { command: [pg_isready, -U, gateway, -d, gateway] }
+            periodSeconds: 20
+          resources: {{- toYaml .Values.postgres.resources | nindent 12 }}
+          volumeMounts:
+            - { name: data, mountPath: /var/lib/postgresql/data }
+            - { name: run, mountPath: /var/run/postgresql }
+      volumes:
+        - name: run
+          emptyDir: {}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: [ReadWriteOnce]
+        {{- include "urumi.storageClass" . | nindent 8 }}
+        resources:
+          requests:
+            storage: {{ .Values.postgres.storage }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: gateway
+  namespace: {{ $ns }}
+  labels: {{- include "urumi.labels" . | nindent 4 }}
+spec:
+  selector: { app: gateway }
+  ports: [{ name: http, port: 80, targetPort: 8080 }]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway
+  namespace: {{ $ns }}
+  labels: {{- include "urumi.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.gateway.replicas }}
+  selector:
+    matchLabels: { app: gateway }
+  template:
+    metadata:
+      labels: { app: gateway }
+      annotations:
+        checksum/config: {{ printf "%s%s" (toJson .Values.gateway) (toJson .Values.llm) | sha256sum }}
+    spec:
+      securityContext: {{- include "urumi.podSecurity" 1000 | nindent 8 }}
+      automountServiceAccountToken: false
+      containers:
+        - name: gateway
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: [node, apps/gateway/src/main.ts]
+          ports: [{ containerPort: 8080 }]
+          env:
+            - { name: PORT, value: "8080" }
+            - { name: STATIC_DIR, value: /app/apps/dashboard/dist }
+            - { name: PUBLIC_URL, value: '{{ include "urumi.scheme" . }}://{{ include "urumi.appHost" . }}' }
+            - { name: COOKIE_SECURE, value: {{ .Values.tls.enabled | quote }} }
+            - { name: BOOTSTRAP_ADMIN_EMAIL, value: {{ .Values.gateway.adminEmail | quote }} }
+            - name: BOOTSTRAP_ADMIN_PASSWORD
+              valueFrom: { secretKeyRef: { name: gateway-credentials, key: gateway-admin-password } }
+            - name: DATABASE_URL
+              valueFrom: { secretKeyRef: { name: gateway-credentials, key: database-url } }
+            - name: MASTER_KEY
+              valueFrom: { secretKeyRef: { name: gateway-credentials, key: master-key } }
+            - name: WOO_MCP_TOKEN
+              valueFrom: { secretKeyRef: { name: gateway-credentials, key: woo-mcp-token } }
+            - name: NOTES_MCP_TOKEN
+              valueFrom: { secretKeyRef: { name: gateway-credentials, key: notes-mcp-token } }
+            - name: SEED_SERVERS
+              value: {{ list
+                (dict "slug" "woo" "name" "WooCommerce store" "url" (printf "http://woo-mcp.%s.svc.cluster.local:8000/mcp" $mcp) "auth_type" "bearer" "credential_env" "WOO_MCP_TOKEN")
+                (dict "slug" "notes" "name" "Team notes" "url" (printf "http://notes-mcp.%s.svc.cluster.local:8000/mcp" $mcp) "auth_type" "bearer" "credential_env" "NOTES_MCP_TOKEN")
+                (dict "slug" "fx" "name" "Currency rates" "url" (printf "http://fx-mcp.%s.svc.cluster.local:8000/mcp" $mcp) "auth_type" "none")
+                | toJson | quote }}
+            - { name: SEED_ADMIN_ONLY_TOOLS, value: {{ .Values.gateway.adminOnlyTools | quote }} }
+            - { name: ALLOWED_PRIVATE_HOST_SUFFIXES, value: {{ printf ".%s.svc.cluster.local" $mcp | quote }} }
+            - { name: LIST_TIMEOUT_MS, value: {{ .Values.gateway.listTimeoutMs | quote }} }
+            - { name: CALL_TIMEOUT_MS, value: {{ .Values.gateway.callTimeoutMs | quote }} }
+            - { name: REFRESH_INTERVAL_MS, value: {{ .Values.gateway.refreshIntervalMs | quote }} }
+            - { name: LLM_BASE_URL, value: {{ .Values.llm.baseUrl | quote }} }
+            - { name: LLM_MODEL, value: {{ .Values.llm.model | quote }} }
+            - name: LLM_API_KEY
+              valueFrom: { secretKeyRef: { name: {{ .Values.llm.existingSecret }}, key: api-key, optional: true } }
+          securityContext:
+            readOnlyRootFilesystem: true
+            {{- include "urumi.restricted" . | nindent 12 }}
+          readinessProbe:
+            httpGet: { path: /readyz, port: 8080 }
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: { path: /healthz, port: 8080 }
+            periodSeconds: 20
+          resources: {{- toYaml .Values.gateway.resources | nindent 12 }}
+          volumeMounts:
+            - { name: tmp, mountPath: /tmp }
+      volumes:
+        - name: tmp
+          emptyDir: {}
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: dashboard
+  namespace: {{ $ns }}
+  labels: {{- include "urumi.labels" . | nindent 4 }}
+  {{- if .Values.tls.clusterIssuer }}
+  annotations:
+    cert-manager.io/cluster-issuer: {{ .Values.tls.clusterIssuer }}
+  {{- end }}
+spec:
+  ingressClassName: {{ .Values.ingress.className }}
+  {{- if .Values.tls.enabled }}
+  tls:
+    - hosts: [{{ include "urumi.appHost" . }}]
+      secretName: dashboard-tls
+  {{- end }}
+  rules:
+    - host: {{ include "urumi.appHost" . }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service: { name: gateway, port: { number: 80 } }

@@ -1,0 +1,25 @@
+domain: shop.example.com
+tls:
+  enabled: true
+  clusterIssuer: letsencrypt-prod
+ingress:
+  className: traefik
+storageClass: local-path
+image:
+  repository: ghcr.io/<you>/urumi-app
+  tag: "0.1.0"
+  pullPolicy: IfNotPresent
+store:
+  storage: 10Gi
+  resources:
+    requests: { cpu: 250m, memory: 512Mi }
+    limits: { cpu: "2", memory: 1Gi }
+mariadb:
+  storage: 10Gi
+postgres:
+  storage: 5Gi
+gateway:
+  replicas: 2
+  adminEmail: you@example.com
+llm:
+  model: nvidia/nemotron-3-super-120b-a12b:free

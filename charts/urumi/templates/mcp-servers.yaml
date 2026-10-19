@@ -1,0 +1,97 @@
+{{- $ns := .Values.namespaces.mcp }}
+{{- $root := . }}
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ $ns }}
+  labels: {{- include "urumi.labels" . | nindent 4 }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: notes-data
+  namespace: {{ $ns }}
+  labels: {{- include "urumi.labels" . | nindent 4 }}
+spec:
+  accessModes: [ReadWriteOnce]
+  {{- include "urumi.storageClass" . | nindent 2 }}
+  resources:
+    requests:
+      storage: {{ .Values.mcp.notesStorage }}
+{{- $servers := list
+  (dict "name" "woo-mcp" "app" "woo-mcp" "tokenKey" "woo-mcp-token" "env" (list
+    (dict "name" "WC_BASE_URL" "value" (printf "http://wordpress.%s.svc.cluster.local" .Values.namespaces.store))
+    (dict "name" "WC_PUBLIC_HOST" "value" (include "urumi.storeHost" .))
+    (dict "name" "STORE_TIMEZONE" "value" .Values.store.timezone)
+    (dict "name" "WC_CONSUMER_KEY" "valueFrom" (dict "secretKeyRef" (dict "name" "mcp-credentials" "key" "woo-consumer-key")))
+    (dict "name" "WC_CONSUMER_SECRET" "valueFrom" (dict "secretKeyRef" (dict "name" "mcp-credentials" "key" "woo-consumer-secret")))))
+  (dict "name" "notes-mcp" "app" "notes-mcp" "tokenKey" "notes-mcp-token" "volume" "notes-data" "env" (list
+    (dict "name" "NOTES_FILE" "value" "/data/notes.json")))
+  (dict "name" "fx-mcp" "app" "fx-mcp" "env" (list
+    (dict "name" "FX_API_URL" "value" .Values.mcp.fxApiUrl)))
+}}
+{{- range $s := $servers }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $s.name }}
+  namespace: {{ $ns }}
+  labels: {{- include "urumi.labels" $root | nindent 4 }}
+spec:
+  selector: { app: {{ $s.app }} }
+  ports: [{ name: http, port: 8000, targetPort: 8000 }]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $s.name }}
+  namespace: {{ $ns }}
+  labels: {{- include "urumi.labels" $root | nindent 4 }}
+spec:
+  replicas: 1
+  {{- if $s.volume }}
+  strategy: { type: Recreate }
+  {{- end }}
+  selector:
+    matchLabels: { app: {{ $s.app }} }
+  template:
+    metadata:
+      labels: { app: {{ $s.app }}, urumi/role: mcp-upstream }
+    spec:
+      securityContext: {{- include "urumi.podSecurity" 1000 | nindent 8 }}
+      automountServiceAccountToken: false
+      containers:
+        - name: server
+          image: "{{ $root.Values.image.repository }}:{{ $root.Values.image.tag }}"
+          imagePullPolicy: {{ $root.Values.image.pullPolicy }}
+          command: [node, apps/{{ $s.app }}/src/server.ts]
+          ports: [{ containerPort: 8000 }]
+          env:
+            - { name: PORT, value: "8000" }
+            - { name: ALLOWED_HOSTS, value: "{{ $s.name }}.{{ $ns }}.svc.cluster.local,{{ $s.name }}.{{ $ns }}.svc,{{ $s.name }}.{{ $ns }},localhost" }
+            {{- if $s.tokenKey }}
+            - name: MCP_BEARER_TOKEN
+              valueFrom: { secretKeyRef: { name: mcp-credentials, key: {{ $s.tokenKey }} } }
+            {{- end }}
+            {{- toYaml $s.env | nindent 12 }}
+          securityContext:
+            readOnlyRootFilesystem: true
+            {{- include "urumi.restricted" $root | nindent 12 }}
+          readinessProbe:
+            httpGet: { path: /healthz, port: 8000 }
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: { path: /healthz, port: 8000 }
+            periodSeconds: 20
+          resources: {{- toYaml $root.Values.mcp.resources | nindent 12 }}
+          {{- if $s.volume }}
+          volumeMounts:
+            - { name: data, mountPath: /data }
+          {{- end }}
+      {{- if $s.volume }}
+      volumes:
+        - name: data
+          persistentVolumeClaim: { claimName: {{ $s.volume }} }
+      {{- end }}
+{{- end }}
