@@ -167,6 +167,7 @@ jobs:
         run: |
           ssh "${EC2_USER}@${EC2_HOST}" "bash -c '
             set -euo pipefail
+            export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
             cd ~/urumi-mcp-gateway
             chmod +x scripts/ec2-deploy.sh
             ./scripts/ec2-deploy.sh \"${IMAGE_REPO}\" \"${IMAGE_TAG}\" \"urumi\" \"urumi-platform\" \"values/values-prod.yaml\"
