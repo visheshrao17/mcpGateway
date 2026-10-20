@@ -127,26 +127,25 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      - name: Configure SSH
+      - name: Load SSH Key
+        uses: webfactory/ssh-agent@v0.9.1
+        with:
+          ssh-private-key: ${{ secrets.EC2_SSH_KEY }}
+
+      - name: Configure SSH Known Hosts
         env:
-          SSH_PRIVATE_KEY: ${{ secrets.EC2_SSH_KEY }}
           SSH_KNOWN_HOSTS: ${{ secrets.EC2_SSH_KNOWN_HOSTS }}
           EC2_HOST: ${{ secrets.EC2_HOST }}
         run: |
           mkdir -p ~/.ssh
           chmod 700 ~/.ssh
           if [ -n "${SSH_KNOWN_HOSTS}" ]; then
-            echo "${SSH_KNOWN_HOSTS}" > ~/.ssh/known_hosts
+            echo "${SSH_KNOWN_HOSTS}" >> ~/.ssh/known_hosts
           else
-            echo "::warning::EC2_SSH_KNOWN_HOSTS secret is not set. Scanning remote host key..."
+            echo "::warning::EC2_SSH_KNOWN_HOSTS not set – scanning host key (not recommended for production)"
             ssh-keyscan -H "${EC2_HOST}" >> ~/.ssh/known_hosts 2>/dev/null
           fi
           chmod 644 ~/.ssh/known_hosts
-          
-          eval "$(ssh-agent -s)"
-          echo "${SSH_PRIVATE_KEY}" | tr -d '\r' | ssh-add -
-          echo "SSH_AUTH_SOCK=${SSH_AUTH_SOCK}" >> "$GITHUB_ENV"
-          echo "SSH_AGENT_PID=${SSH_AGENT_PID}" >> "$GITHUB_ENV"
 
       - name: Sync Helm Chart & Deployment Scripts
         env:
