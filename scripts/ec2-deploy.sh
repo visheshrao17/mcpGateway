@@ -23,24 +23,70 @@ echo "Timestamp: $(date -u '+%Y-%m-%d %H:%M:%SZ')"
 echo "================================================================================"
 
 # K3s kubeconfig is root-owned (-rw------- root root).
-# Configure the K3s kubeconfig path explicitly and use sudo with --kubeconfig so the
-# SSH user (ubuntu) can access the cluster reliably without permission issues.
+# Configure the K3s kubeconfig path explicitly.
 export KUBECONFIG="${KUBECONFIG:-/etc/rancher/k3s/k3s.yaml}"
 K3S_KUBECONFIG="${KUBECONFIG}"
 
-# Ensure kubeconfig is readable and configure root wrappers
+# Ensure kubeconfig is readable by the deploy user
 sudo chmod 644 "${K3S_KUBECONFIG}" 2>/dev/null || true
-KUBECTL="sudo kubectl --kubeconfig=${K3S_KUBECONFIG}"
-HELM="sudo helm --kubeconfig=${K3S_KUBECONFIG}"
 
-# Fallback: if 'kubectl' binary is not in sudo path, use 'k3s kubectl'
-if ! sudo which kubectl > /dev/null 2>&1 && sudo which k3s > /dev/null 2>&1; then
-  KUBECTL="sudo k3s kubectl --kubeconfig=${K3S_KUBECONFIG}"
+# Resolve kubectl binary
+KUBECTL_BIN=""
+if [ -x /usr/local/bin/kubectl ]; then
+  KUBECTL_BIN="/usr/local/bin/kubectl"
+elif command -v kubectl &>/dev/null; then
+  KUBECTL_BIN="$(command -v kubectl)"
+elif command -v k3s &>/dev/null; then
+  KUBECTL_BIN="$(command -v k3s) kubectl"
+elif [ -x /usr/local/bin/k3s ]; then
+  KUBECTL_BIN="/usr/local/bin/k3s kubectl"
+else
+  KUBECTL_BIN="kubectl"
 fi
 
-# 1. Verify cluster access
+if ${KUBECTL_BIN} --kubeconfig="${K3S_KUBECONFIG}" cluster-info > /dev/null 2>&1; then
+  KUBECTL="${KUBECTL_BIN} --kubeconfig=${K3S_KUBECONFIG}"
+elif sudo ${KUBECTL_BIN} --kubeconfig="${K3S_KUBECONFIG}" cluster-info > /dev/null 2>&1; then
+  KUBECTL="sudo ${KUBECTL_BIN} --kubeconfig=${K3S_KUBECONFIG}"
+else
+  KUBECTL="sudo kubectl --kubeconfig=${K3S_KUBECONFIG}"
+fi
+
+# Resolve Helm binary (auto-install Helm 3 if not present on system)
+if ! command -v helm &>/dev/null && ! sudo which helm &>/dev/null && [ ! -x /usr/local/bin/helm ]; then
+  echo "Helm CLI not found on system. Installing Helm 3..."
+  curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | sudo bash
+fi
+
+HELM_BIN=""
+if [ -x /usr/local/bin/helm ]; then
+  HELM_BIN="/usr/local/bin/helm"
+elif command -v helm &>/dev/null; then
+  HELM_BIN="$(command -v helm)"
+elif sudo which helm &>/dev/null; then
+  HELM_BIN="$(sudo which helm)"
+elif [ -x /snap/bin/helm ]; then
+  HELM_BIN="/snap/bin/helm"
+else
+  HELM_BIN="helm"
+fi
+
+if ${HELM_BIN} --kubeconfig="${K3S_KUBECONFIG}" version > /dev/null 2>&1; then
+  HELM="${HELM_BIN} --kubeconfig=${K3S_KUBECONFIG}"
+elif sudo ${HELM_BIN} --kubeconfig="${K3S_KUBECONFIG}" version > /dev/null 2>&1; then
+  HELM="sudo ${HELM_BIN} --kubeconfig=${K3S_KUBECONFIG}"
+else
+  HELM="${HELM_BIN} --kubeconfig=${K3S_KUBECONFIG}"
+fi
+
+# 1. Verify cluster access and Helm functionality
 if ! ${KUBECTL} cluster-info > /dev/null 2>&1; then
   echo "Error: Cannot connect to Kubernetes cluster via kubectl. Check KUBECONFIG (${K3S_KUBECONFIG})." >&2
+  exit 1
+fi
+
+if ! ${HELM} version > /dev/null 2>&1; then
+  echo "Error: Helm is not operational (${HELM}). Check Helm installation." >&2
   exit 1
 fi
 
