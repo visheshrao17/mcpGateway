@@ -152,11 +152,11 @@ jobs:
           EC2_USER: ${{ secrets.EC2_USER || 'ubuntu' }}
           EC2_HOST: ${{ secrets.EC2_HOST }}
         run: |
-          ssh "${EC2_USER}@${EC2_HOST}" "mkdir -p ~/urumi-mcp-gateway/values"
+          ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=10 "${EC2_USER}@${EC2_HOST}" "mkdir -p ~/urumi-mcp-gateway/values"
           scp -r charts scripts "${EC2_USER}@${EC2_HOST}:~/urumi-mcp-gateway/"
           # Only sync the example template – never overwrite the live values-prod.yaml
           scp values/values-prod.example.yaml "${EC2_USER}@${EC2_HOST}:~/urumi-mcp-gateway/values/values-prod.example.yaml"
-          ssh "${EC2_USER}@${EC2_HOST}" "chmod +x ~/urumi-mcp-gateway/scripts/ec2-deploy.sh ~/urumi-mcp-gateway/scripts/ec2-bootstrap.sh"
+          ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=10 "${EC2_USER}@${EC2_HOST}" "chmod +x ~/urumi-mcp-gateway/scripts/*.sh"
 
       - name: Execute Deployment and Health Checks on EC2
         env:
@@ -165,10 +165,10 @@ jobs:
           IMAGE_REPO: ${{ needs.build-and-publish.outputs.image-repo }}
           IMAGE_TAG: ${{ needs.build-and-publish.outputs.image-tag }}
         run: |
-          ssh "${EC2_USER}@${EC2_HOST}" "bash -c '
+          ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=10 "${EC2_USER}@${EC2_HOST}" "bash -c '
             set -euo pipefail
             export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
             cd ~/urumi-mcp-gateway
-            chmod +x scripts/ec2-deploy.sh
+            chmod +x scripts/*.sh
             ./scripts/ec2-deploy.sh \"${IMAGE_REPO}\" \"${IMAGE_TAG}\" \"urumi\" \"urumi-platform\" \"values/values-prod.yaml\"
           '"

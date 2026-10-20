@@ -93,8 +93,20 @@ fi
 # 2. Record previous revision for safe rollback
 PREV_REVISION=""
 if ${HELM} status "${RELEASE_NAME}" -n "${NAMESPACE}" > /dev/null 2>&1; then
-  PREV_REVISION=$(${HELM} history "${RELEASE_NAME}" -n "${NAMESPACE}" -o json | jq -r '.[-1].revision // empty' 2>/dev/null || true)
-  echo "Current Helm release revision: ${PREV_REVISION:-none}"
+  CURRENT_STATUS=$(${HELM} status "${RELEASE_NAME}" -n "${NAMESPACE}" -o json 2>/dev/null | jq -r '.info.status // empty' 2>/dev/null || true)
+  PREV_REVISION=$(${HELM} history "${RELEASE_NAME}" -n "${NAMESPACE}" -o json 2>/dev/null | jq -r '.[-1].revision // empty' 2>/dev/null || true)
+  echo "Current Helm release: ${RELEASE_NAME} (status: ${CURRENT_STATUS:-unknown}, revision: ${PREV_REVISION:-none})"
+
+  # Auto-recover if previous release was interrupted in pending state
+  if [ "${CURRENT_STATUS}" = "pending-install" ] || [ "${CURRENT_STATUS}" = "pending-upgrade" ]; then
+    echo "Warning: Release '${RELEASE_NAME}' is locked in '${CURRENT_STATUS}' state."
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    if [ -f "${SCRIPT_DIR}/recover-release.sh" ]; then
+      echo "Invoking recover-release.sh to resolve stuck state safely..."
+      bash "${SCRIPT_DIR}/recover-release.sh" "${RELEASE_NAME}" "${NAMESPACE}"
+      PREV_REVISION=$(${HELM} history "${RELEASE_NAME}" -n "${NAMESPACE}" -o json 2>/dev/null | jq -r '.[-1].revision // empty' 2>/dev/null || true)
+    fi
+  fi
 else
   echo "Release ${RELEASE_NAME} not found; performing initial install."
 fi
