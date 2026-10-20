@@ -1,25 +1,118 @@
-domain: shop.example.com
+# =============================================================================
+# values-prod.example.yaml  –  Urumi MCP Gateway  (Production template)
+# =============================================================================
+# Copy to values/values-prod.yaml on your EC2 host and fill in the blanks.
+# NEVER commit values-prod.yaml – it contains generated secrets after first deploy.
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# 1. Domain / TLS
+# ---------------------------------------------------------------------------
+domain: shop.example.com          # ← your actual domain (or <IP>.sslip.io)
 tls:
   enabled: true
-  clusterIssuer: letsencrypt-prod
+  clusterIssuer: letsencrypt-prod # set to "" to disable cert-manager TLS
+
+# Subdomain prefixes  →  store.shop.example.com  /  app.shop.example.com
+hosts:
+  store: store
+  app: app
+
+# ---------------------------------------------------------------------------
+# 2. Kubernetes namespaces
+# ---------------------------------------------------------------------------
+namespaces:
+  store: urumi-store
+  mcp:   urumi-mcp
+
+# ---------------------------------------------------------------------------
+# 3. Ingress
+# ---------------------------------------------------------------------------
 ingress:
   className: traefik
-storageClass: local-path
+
+# ---------------------------------------------------------------------------
+# 4. Storage
+# ---------------------------------------------------------------------------
+storageClass: local-path          # K3s default; change for AWS EBS etc.
+
+# ---------------------------------------------------------------------------
+# 5. Application image  (set by CI – override here for manual deploys)
+# ---------------------------------------------------------------------------
 image:
-  repository: ghcr.io/<you>/urumi-app
-  tag: "0.1.0"
+  repository: ghcr.io/<your-github-org>/urumi-app
+  tag: "latest"
   pullPolicy: IfNotPresent
-store:
-  storage: 10Gi
-  resources:
-    requests: { cpu: 250m, memory: 512Mi }
-    limits: { cpu: "2", memory: 1Gi }
-mariadb:
-  storage: 10Gi
-postgres:
-  storage: 5Gi
+
+# ---------------------------------------------------------------------------
+# 6. Gateway service
+# ---------------------------------------------------------------------------
 gateway:
   replicas: 2
   adminEmail: you@example.com
+  adminOnlyTools: ""              # comma-separated tool slugs to restrict
+  listTimeoutMs: "5000"
+  callTimeoutMs: "30000"
+  refreshIntervalMs: "60000"
+  resources:
+    requests: { cpu: 100m, memory: 256Mi }
+    limits:   { cpu: "1",  memory: 512Mi }
+
+# ---------------------------------------------------------------------------
+# 7. LLM
+# ---------------------------------------------------------------------------
 llm:
+  baseUrl: https://openrouter.ai/api/v1
   model: nvidia/nemotron-3-super-120b-a12b:free
+  # Kubernetes Secret that holds key "api-key".
+  # Create it once:
+  #   kubectl create secret generic llm-api-key \
+  #     --from-literal=api-key=<YOUR_KEY> -n urumi-platform
+  existingSecret: llm-api-key
+
+# ---------------------------------------------------------------------------
+# 8. PostgreSQL (gateway metadata DB)
+# ---------------------------------------------------------------------------
+postgres:
+  image: postgres:17-alpine
+  storage: 5Gi
+  resources:
+    requests: { cpu: 100m, memory: 128Mi }
+    limits:   { cpu: "1",  memory: 512Mi }
+
+# ---------------------------------------------------------------------------
+# 9. MariaDB (WordPress)
+# ---------------------------------------------------------------------------
+mariadb:
+  image: mariadb:11
+  storage: 10Gi
+  resources:
+    requests: { cpu: 100m, memory: 256Mi }
+    limits:   { cpu: "1",  memory: 1Gi }
+
+# ---------------------------------------------------------------------------
+# 10. WooCommerce / WordPress store
+# ---------------------------------------------------------------------------
+store:
+  wordpressImage: wordpress:6-php8.3-apache
+  cliImage: wordpress:cli-2-php8.3
+  woocommerceVersion: "9.4.2"
+  storage: 10Gi
+  title: "My Urumi Store"
+  adminEmail: you@example.com
+  timezone: UTC
+  currency: USD
+  country: US
+  resources:
+    requests: { cpu: 250m, memory: 512Mi }
+    limits:   { cpu: "2",  memory: 1Gi }
+
+# ---------------------------------------------------------------------------
+# 11. MCP servers
+# ---------------------------------------------------------------------------
+mcp:
+  notesStorage: 1Gi
+  fxApiUrl: https://open.er-api.com/v6/latest
+  resources:
+    requests: { cpu: 50m,  memory: 128Mi }
+    limits:   { cpu: 500m, memory: 256Mi }

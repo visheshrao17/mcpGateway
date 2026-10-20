@@ -1,0 +1,174 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      skip_tests:
+        description: 'Skip testing stage (build & deploy only)'
+        required: false
+        type: boolean
+        default: false
+
+concurrency:
+  group: production-deploy
+  cancel-in-progress: false
+
+jobs:
+  validate-and-test:
+    name: Validate and Test
+    runs-on: ubuntu-latest
+    if: ${{ !inputs.skip_tests }}
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: postgres
+        ports:
+          - 55432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: 'npm'
+
+      - name: Install Dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Run Unit & Integration Tests
+        env:
+          TEST_PG_URL: postgres://postgres:test@127.0.0.1:55432/postgres
+        run: npm test
+
+      - name: Setup Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.16.2
+
+      - name: Lint Helm Chart
+        run: helm lint charts/urumi
+
+      - name: Render Helm Template (Validation)
+        run: |
+          helm template urumi charts/urumi \
+            -f values/values-prod.example.yaml \
+            --set image.repository=ghcr.io/test/urumi-app \
+            --set image.tag=sha-test \
+            --set gateway.adminEmail=ci@example.com \
+            --set llm.existingSecret=llm-api-key \
+            > /dev/null
+
+  build-and-publish:
+    name: Build and Publish Images
+    runs-on: ubuntu-latest
+    needs: [validate-and-test]
+    if: always() && (needs.validate-and-test.result == 'success' || inputs.skip_tests == true)
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image-repo: ${{ steps.meta.outputs.repository }}
+      image-tag: ${{ steps.meta.outputs.tag }}
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Compute Image Metadata
+        id: meta
+        run: |
+          REPO_OWNER=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+          echo "repository=ghcr.io/${REPO_OWNER}/urumi-app" >> "$GITHUB_OUTPUT"
+          echo "tag=${{ github.sha }}" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and Push Docker Image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          push: true
+          tags: |
+            ${{ steps.meta.outputs.repository }}:${{ steps.meta.outputs.tag }}
+            ${{ steps.meta.outputs.repository }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  deploy-to-ec2:
+    name: Deploy to EC2 K3s
+    runs-on: ubuntu-latest
+    needs: [build-and-publish]
+    environment: production
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Configure SSH
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.EC2_SSH_KEY }}
+          SSH_KNOWN_HOSTS: ${{ secrets.EC2_SSH_KNOWN_HOSTS }}
+          EC2_HOST: ${{ secrets.EC2_HOST }}
+        run: |
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          if [ -n "${SSH_KNOWN_HOSTS}" ]; then
+            echo "${SSH_KNOWN_HOSTS}" > ~/.ssh/known_hosts
+          else
+            echo "::warning::EC2_SSH_KNOWN_HOSTS secret is not set. Scanning remote host key..."
+            ssh-keyscan -H "${EC2_HOST}" >> ~/.ssh/known_hosts 2>/dev/null
+          fi
+          chmod 644 ~/.ssh/known_hosts
+          
+          eval "$(ssh-agent -s)"
+          echo "${SSH_PRIVATE_KEY}" | tr -d '\r' | ssh-add -
+          echo "SSH_AUTH_SOCK=${SSH_AUTH_SOCK}" >> "$GITHUB_ENV"
+          echo "SSH_AGENT_PID=${SSH_AGENT_PID}" >> "$GITHUB_ENV"
+
+      - name: Sync Helm Chart & Deployment Scripts
+        env:
+          EC2_USER: ${{ secrets.EC2_USER || 'ubuntu' }}
+          EC2_HOST: ${{ secrets.EC2_HOST }}
+        run: |
+          ssh "${EC2_USER}@${EC2_HOST}" "mkdir -p ~/urumi-mcp-gateway/values"
+          scp -r charts scripts "${EC2_USER}@${EC2_HOST}:~/urumi-mcp-gateway/"
+          # Only sync the example template – never overwrite the live values-prod.yaml
+          scp values/values-prod.example.yaml "${EC2_USER}@${EC2_HOST}:~/urumi-mcp-gateway/values/values-prod.example.yaml"
+          ssh "${EC2_USER}@${EC2_HOST}" "chmod +x ~/urumi-mcp-gateway/scripts/ec2-deploy.sh ~/urumi-mcp-gateway/scripts/ec2-bootstrap.sh"
+
+      - name: Execute Deployment and Health Checks on EC2
+        env:
+          EC2_USER: ${{ secrets.EC2_USER || 'ubuntu' }}
+          EC2_HOST: ${{ secrets.EC2_HOST }}
+          IMAGE_REPO: ${{ needs.build-and-publish.outputs.image-repo }}
+          IMAGE_TAG: ${{ needs.build-and-publish.outputs.image-tag }}
+        run: |
+          ssh "${EC2_USER}@${EC2_HOST}" "bash -c '
+            set -euo pipefail
+            cd ~/urumi-mcp-gateway
+            chmod +x scripts/ec2-deploy.sh
+            ./scripts/ec2-deploy.sh \"${IMAGE_REPO}\" \"${IMAGE_TAG}\" \"urumi\" \"urumi-platform\" \"values/values-prod.yaml\"
+          '"
