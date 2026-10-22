@@ -90,12 +90,16 @@ if ! ${HELM} version > /dev/null 2>&1; then
   exit 1
 fi
 
-# 2. Record previous revision for safe rollback
+# 2. Record previous known-good revision for safe rollback
+# ONLY select revisions that actually reached 'deployed' or 'superseded' state.
+# Never rollback to a 'failed' or 'pending' revision.
 PREV_REVISION=""
 if ${HELM} status "${RELEASE_NAME}" -n "${NAMESPACE}" > /dev/null 2>&1; then
   CURRENT_STATUS=$(${HELM} status "${RELEASE_NAME}" -n "${NAMESPACE}" -o json 2>/dev/null | jq -r '.info.status // empty' 2>/dev/null || true)
-  PREV_REVISION=$(${HELM} history "${RELEASE_NAME}" -n "${NAMESPACE}" -o json 2>/dev/null | jq -r '.[-1].revision // empty' 2>/dev/null || true)
-  echo "Current Helm release: ${RELEASE_NAME} (status: ${CURRENT_STATUS:-unknown}, revision: ${PREV_REVISION:-none})"
+  LATEST_REV=$(${HELM} history "${RELEASE_NAME}" -n "${NAMESPACE}" -o json 2>/dev/null | jq -r '.[-1].revision // empty' 2>/dev/null || true)
+  PREV_REVISION=$(${HELM} history "${RELEASE_NAME}" -n "${NAMESPACE}" -o json 2>/dev/null | \
+    jq -r '[.[] | select(.status == "deployed" or .status == "superseded")] | .[-1].revision // empty' 2>/dev/null || true)
+  echo "Current Helm release: ${RELEASE_NAME} (status: ${CURRENT_STATUS:-unknown}, latest revision: ${LATEST_REV:-none}, last known-good revision: ${PREV_REVISION:-none})"
 
   # Auto-recover if previous release was interrupted in pending state
   if [ "${CURRENT_STATUS}" = "pending-install" ] || [ "${CURRENT_STATUS}" = "pending-upgrade" ]; then
@@ -104,7 +108,8 @@ if ${HELM} status "${RELEASE_NAME}" -n "${NAMESPACE}" > /dev/null 2>&1; then
     if [ -f "${SCRIPT_DIR}/recover-release.sh" ]; then
       echo "Invoking recover-release.sh to resolve stuck state safely..."
       bash "${SCRIPT_DIR}/recover-release.sh" "${RELEASE_NAME}" "${NAMESPACE}"
-      PREV_REVISION=$(${HELM} history "${RELEASE_NAME}" -n "${NAMESPACE}" -o json 2>/dev/null | jq -r '.[-1].revision // empty' 2>/dev/null || true)
+      PREV_REVISION=$(${HELM} history "${RELEASE_NAME}" -n "${NAMESPACE}" -o json 2>/dev/null | \
+        jq -r '[.[] | select(.status == "deployed" or .status == "superseded")] | .[-1].revision // empty' 2>/dev/null || true)
     fi
   fi
 else
@@ -131,30 +136,84 @@ if [ ! -f "${VALUES_FILE}" ]; then
   fi
 fi
 
-# 4. Rollback helper function
+# 4. Comprehensive diagnostics collector
+gather_diagnostics() {
+  echo "================================================================================"
+  echo "=== DETAILED DEPLOYMENT FAILURE DIAGNOSTICS ==="
+  echo "================================================================================"
+  echo ""
+  echo "--- 1. All Pods across Application Namespaces ---"
+  ${KUBECTL} get pods -A -o wide 2>/dev/null | grep -E "urumi|NAMESPACE" || true
+
+  echo ""
+  echo "--- 2. Batch Jobs Status ---"
+  ${KUBECTL} get jobs -A -o wide 2>/dev/null | grep -E "urumi|NAMESPACE" || true
+
+  echo ""
+  echo "--- 3. PVCs and Storage Bindings ---"
+  ${KUBECTL} get pvc -A -o wide 2>/dev/null | grep -E "urumi|NAMESPACE" || true
+
+  echo ""
+  echo "--- 4. Ingress and Services ---"
+  ${KUBECTL} get svc,ingress -A 2>/dev/null | grep -E "urumi|NAMESPACE" || true
+
+  echo ""
+  echo "--- 5. Recent Warning and Error Events (last 15m) ---"
+  for ns in "${NAMESPACE}" urumi-store urumi-mcp; do
+    echo ">> Events in namespace: ${ns} <<"
+    ${KUBECTL} get events -n "${ns}" --sort-by='.metadata.creationTimestamp' 2>/dev/null | tail -n 25 || true
+  done
+
+  echo ""
+  echo "--- 6. Container Logs for Non-Running Pods ---"
+  for ns in "${NAMESPACE}" urumi-store urumi-mcp; do
+    BAD_PODS=$(${KUBECTL} get pods -n "${ns}" --no-headers 2>/dev/null | awk '$3 !~ /Running|Completed/ {print $1}' || true)
+    for p in ${BAD_PODS}; do
+      echo ">> Pod state and logs: ${ns}/${p} <<"
+      ${KUBECTL} describe pod -n "${ns}" "${p}" 2>/dev/null | grep -E "State:|Reason:|Message:|Exit Code:" || true
+      ${KUBECTL} logs -n "${ns}" "${p}" --tail=50 --all-containers 2>/dev/null || true
+    done
+  done
+
+  # Inspect store-bootstrap job pod logs specifically if present
+  JOB_POD=$(${KUBECTL} get pods -n urumi-store -l app=store-bootstrap --no-headers 2>/dev/null | awk '{print $1}' | tail -n 1 || true)
+  if [ -n "${JOB_POD}" ]; then
+    echo ">> Logs for store-bootstrap job pod (urumi-store/${JOB_POD}) <<"
+    ${KUBECTL} logs -n urumi-store "${JOB_POD}" --tail=60 2>/dev/null || true
+  fi
+
+  echo ""
+  echo "--- 7. Helm Release Status and History ---"
+  ${HELM} status "${RELEASE_NAME}" -n "${NAMESPACE}" 2>/dev/null || true
+  ${HELM} history "${RELEASE_NAME}" -n "${NAMESPACE}" 2>/dev/null || true
+  echo "================================================================================"
+}
+
+# 5. History-aware rollback helper function
 rollback_on_failure() {
   local exit_code=$?
   echo "--------------------------------------------------------------------------------"
   echo "Deployment step failed with exit code ${exit_code}."
-  echo "Gathering cluster status..."
-  ${KUBECTL} get pods,pvc,ingress -A -l app.kubernetes.io/part-of=urumi || true
+  gather_diagnostics
 
   if [ -n "${PREV_REVISION}" ]; then
-    echo "Initiating safe Helm rollback to revision ${PREV_REVISION}..."
+    echo "Initiating safe Helm rollback to last known-good revision ${PREV_REVISION}..."
     if ${HELM} rollback "${RELEASE_NAME}" "${PREV_REVISION}" -n "${NAMESPACE}" --wait --timeout 5m; then
-      echo "Successfully rolled back to revision ${PREV_REVISION}."
+      echo "Successfully rolled back to known-good revision ${PREV_REVISION}."
     else
-      echo "Rollback failed. Manual operator intervention required." >&2
+      echo "Rollback to revision ${PREV_REVISION} failed. Manual operator intervention required." >&2
     fi
   else
-    echo "No previous release revision to rollback to."
+    echo "No previously successful (deployed/superseded) release revision exists."
+    echo "Skipping rollback to avoid re-triggering a known-failed initial revision."
   fi
   echo "--------------------------------------------------------------------------------"
   exit "${exit_code}"
 }
 trap rollback_on_failure ERR
 
-# 5. Execute Helm Upgrade / Install
+# 6. Execute Helm Upgrade / Install
+# Using --wait to ensure all core Deployments and StatefulSets are fully Ready.
 echo "Executing helm upgrade --install..."
 ${HELM} upgrade --install "${RELEASE_NAME}" charts/urumi \
   -n "${NAMESPACE}" --create-namespace \
@@ -162,18 +221,27 @@ ${HELM} upgrade --install "${RELEASE_NAME}" charts/urumi \
   --set image.repository="${IMAGE_REPOSITORY}" \
   --set image.tag="${IMAGE_TAG}" \
   --wait \
-  --wait-for-jobs \
   --timeout 10m
 
-# 6. Verify Deployment Health across all namespaces
+# 7. Verify Core Application Deployment Health across all namespaces
 echo "Verifying application pod health..."
-${KUBECTL} rollout status deployment/gateway -n urumi-platform --timeout=2m
-${KUBECTL} rollout status deployment/woo-mcp -n urumi-mcp --timeout=2m
-${KUBECTL} rollout status deployment/notes-mcp -n urumi-mcp --timeout=2m
-${KUBECTL} rollout status deployment/fx-mcp -n urumi-mcp --timeout=2m
-${KUBECTL} rollout status deployment/wordpress -n urumi-store --timeout=2m
+${KUBECTL} rollout status deployment/gateway -n urumi-platform --timeout=3m
+${KUBECTL} rollout status deployment/woo-mcp -n urumi-mcp --timeout=3m
+${KUBECTL} rollout status deployment/notes-mcp -n urumi-mcp --timeout=3m
+${KUBECTL} rollout status deployment/fx-mcp -n urumi-mcp --timeout=3m
+${KUBECTL} rollout status deployment/wordpress -n urumi-store --timeout=3m
 
-# 7. Check Ingress and HTTP endpoints
+# 8. Check Store Bootstrap Job status
+echo "Checking store bootstrap job in urumi-store..."
+if ${KUBECTL} get job -l app.kubernetes.io/part-of=urumi -n urumi-store > /dev/null 2>&1; then
+  echo "Waiting up to 3m for store bootstrap job to complete..."
+  ${KUBECTL} wait --for=condition=complete job -l app.kubernetes.io/part-of=urumi -n urumi-store --timeout=3m || {
+    echo "Warning: Store bootstrap job is still running or pending. Gathering job logs:"
+    ${KUBECTL} logs -n urumi-store -l app=store-bootstrap --tail=40 2>/dev/null || true
+  }
+fi
+
+# 9. Check Ingress and HTTP endpoints
 echo "Checking HTTP health endpoint..."
 GATEWAY_IP=$(${KUBECTL} get svc gateway -n urumi-platform -o jsonpath='{.spec.clusterIP}')
 if [ -n "${GATEWAY_IP}" ]; then

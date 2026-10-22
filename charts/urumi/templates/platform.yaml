@@ -23,7 +23,7 @@ spec:
     matchLabels: { app: postgres }
   template:
     metadata:
-      labels: { app: postgres }
+      labels: { app: postgres, app.kubernetes.io/part-of: urumi }
     spec:
       securityContext: {{- include "urumi.podSecurity" 70 | nindent 8 }}
       automountServiceAccountToken: false
@@ -83,7 +83,7 @@ spec:
     matchLabels: { app: gateway }
   template:
     metadata:
-      labels: { app: gateway }
+      labels: { app: gateway, app.kubernetes.io/part-of: urumi }
       annotations:
         checksum/config: {{ printf "%s%s" (toJson .Values.gateway) (toJson .Values.llm) | sha256sum }}
     spec:

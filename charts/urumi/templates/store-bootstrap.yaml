@@ -31,7 +31,7 @@ spec:
   ttlSecondsAfterFinished: 3600
   template:
     metadata:
-      labels: { app: store-bootstrap }
+      labels: { app: store-bootstrap, app.kubernetes.io/part-of: urumi }
     spec:
       restartPolicy: OnFailure
       securityContext: {{- include "urumi.podSecurity" 33 | nindent 8 }}

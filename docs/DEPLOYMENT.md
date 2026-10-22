@@ -257,7 +257,7 @@ kubectl rollout restart deployment/gateway -n urumi-platform
 
 | Pipeline fails at SSH step | Verify `EC2_SSH_KEY`, `EC2_HOST`, `EC2_SSH_KNOWN_HOSTS` secrets |
 | `Cannot connect to Kubernetes cluster` | K3s kubeconfig is root-only (`/etc/rancher/k3s/k3s.yaml`). Ensure K3s is running: `sudo systemctl status k3s` and `sudo kubectl --kubeconfig=/etc/rancher/k3s/k3s.yaml get nodes` |
-| `helm upgrade` fails with "context deadline exceeded" | EC2 is too small; try `t3.large`. Also check `kubectl describe pod` |
+| `helm upgrade` fails with "context deadline exceeded" | Check `./scripts/ec2-deploy.sh` diagnostics output for stuck jobs or DNS blocks. Run `./scripts/recover-release.sh` to safely inspect release state without losing data |
 | Gateway pod `CrashLoopBackOff` | `kubectl logs -n urumi-platform deployment/gateway` — usually a bad `DATABASE_URL` or missing secret |
 | WordPress shows "Error establishing a database connection" | MariaDB not ready; `kubectl rollout status statefulset/mariadb -n urumi-store` |
 | TLS cert stuck in `False` state | Ensure port 80 is open in EC2 Security Group; check `kubectl describe certificaterequest -A` |

@@ -57,7 +57,7 @@ spec:
     matchLabels: { app: {{ $s.app }} }
   template:
     metadata:
-      labels: { app: {{ $s.app }}, urumi/role: mcp-upstream }
+      labels: { app: {{ $s.app }}, urumi/role: mcp-upstream, app.kubernetes.io/part-of: urumi }
     spec:
       securityContext: {{- include "urumi.podSecurity" 1000 | nindent 8 }}
       automountServiceAccountToken: false

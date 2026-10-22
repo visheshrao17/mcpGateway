@@ -28,7 +28,7 @@ spec:
     matchLabels: { app: mariadb }
   template:
     metadata:
-      labels: { app: mariadb }
+      labels: { app: mariadb, app.kubernetes.io/part-of: urumi }
     spec:
       securityContext: {{- include "urumi.podSecurity" 999 | nindent 8 }}
       containers:
@@ -109,7 +109,7 @@ spec:
     matchLabels: { app: wordpress }
   template:
     metadata:
-      labels: { app: wordpress }
+      labels: { app: wordpress, app.kubernetes.io/part-of: urumi }
     spec:
       initContainers:
         # The image only copies WordPress into an empty volume. Sync core files whenever the image
